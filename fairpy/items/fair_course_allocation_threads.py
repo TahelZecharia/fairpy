@@ -9,32 +9,29 @@ from fairpy.items.valuations import ValuationMatrix
 from queue import PriorityQueue
 import cvxpy as cp
 import time, math
+import concurrent.futures
+WORKERS=4
 import matplotlib.pyplot as plt
 
-
+from fairpy.items.fair_course_allocation_implementation import course_allocation as allocation
 
 
 """
 Article Name: 
 "Finding Approximate Competitive Equilibria: Efficient and Fair Course Allocation" (2010)
-
 Authors:
 Abraham Othman, Tuomas Sandholm and Eric Budish.
-
 Link: 
 https://dl.acm.org/doi/abs/10.5555/1838206.1838323
-
 Programmer: 
 Tahel Zecharia.
-
 The algorithm performs a fair and equal allocation as much as possible 
 between courses for students given a list of preferences for each student.
-
 """
 
 logger = logging.getLogger(__name__)
 # logger.addHandler(logging.StreamHandler(sys.stdout))
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 
 # console = logging.StreamHandler()  # writes to stderr (= cerr)
 # logger.handlers = [console]
@@ -44,7 +41,7 @@ Epsilon = 0.01
 
 def my_plot():
 
-    students = [s for s in range(5, 20, 5)]
+    students = [s for s in range(5, 20, 2)]
     algo_times = []
     fast_algo_times = []
 
@@ -64,7 +61,7 @@ def my_plot():
             prices.append(np.random.randint(1, 100) / 100)
 
         start_algo = time.perf_counter()
-        course_allocation(ValuationMatrix(utility_matrix), budgets, prices, capacity_arr, num_of_courses)
+        allocation(ValuationMatrix(utility_matrix), budgets, prices, capacity_arr, num_of_courses)
         algo_times.append(time.perf_counter() - start_algo)
 
         start_fast_algo = time.perf_counter()
@@ -73,13 +70,14 @@ def my_plot():
 
     plt.xlabel("num of students")
     plt.ylabel("time")
-    plt.title("Improved Algorithm")
+    plt.title("Without ThreadPool (orange) vs. With ThreadPool (purple)")
     plt.plot(students, algo_times, 'orange')
     plt.plot(students, fast_algo_times, 'purple')
     plt.show()
 
+
 def general_course_allocation(utilities: ValuationMatrix, capacity: List[int], num_of_courses: int,
-                      bound: int = 0, effect_variables: List[Dict[Set, int]] = None, constraint: List[Dict[Set, int]] = None) \
+                      effect_variables: List[Dict[Set, int]] = None, constraint: List[Dict[Set, int]] = None) \
         -> ValuationMatrix:
 
     """
@@ -97,11 +95,11 @@ def general_course_allocation(utilities: ValuationMatrix, capacity: List[int], n
     for course in utilities.objects():
         prices.append(np.random.randint(1, 100)/100)
 
-    return course_allocation(utilities, budgets, prices, capacity, num_of_courses, bound, effect_variables, constraint)
+    return course_allocation(utilities, budgets, prices, capacity, num_of_courses, effect_variables, constraint)
 
 
 def course_allocation(utilities: ValuationMatrix, budgets: List[float], prices: List[float], capacity: List[int],
-                      num_of_courses: int, bound: int = 0,
+                      num_of_courses: int,
                       effect_variables: List[Dict[Set, int]] = None, constraint: List[Dict[Set, int]] = None) \
         -> ValuationMatrix:
     """
@@ -129,17 +127,18 @@ def course_allocation(utilities: ValuationMatrix, budgets: List[float], prices: 
 
     logger.info('course_allocation function')
 
+    start = time.perf_counter()
+
     q = PriorityQueue()
     tabu = []
     curr_node: Course_Bundle = Course_Bundle(utilities, budgets, prices, capacity, num_of_courses)
     best_node = curr_node
 
     counter = 0
-    max_iterations = 50
 
-    while best_node.score() > bound:
+    while best_node.score() > 0:
 
-        if counter == max_iterations:
+        if counter == 100:
             break
 
         tabu.append(curr_node)
@@ -155,7 +154,7 @@ def course_allocation(utilities: ValuationMatrix, budgets: List[float], prices: 
             best_node = curr_node
 
         counter += 1
-
+    print(f"{WORKERS} threads: answers={best_node.placement}, time={time.perf_counter() - start} sec")
     return best_node.placement
 
 
@@ -268,9 +267,9 @@ def score(placement: List[List[bool]], capacity: List[int]) -> float:
     return math.sqrt(ans)
 
 
-def max_utility(utility: List[float], budget: float, prices: List[float], num_of_courses: int,
+def max_utility(utility: np.array, budget: float, prices: np.array, num_of_courses: int,
                 effect_variables: List[Dict[Set, int]] = None, constraint: List[Dict[Set, int]] = None) \
-        -> List[bool]:
+        -> np.array:
     """
     Given a price vector for the courses, the program will return
     the most affordable course package for the student,
@@ -299,6 +298,7 @@ def max_utility(utility: List[float], budget: float, prices: List[float], num_of
     # Form and solve the problem
     prob = cp.Problem(objective, constraints)
     prob.solve()
+    # return x.value.astype(int).tolist()
     return x.value.ravel().astype(int).tolist()
 
 
@@ -326,10 +326,16 @@ def max_utilities(utilities: ValuationMatrix, budgets: List[float], prices: List
     logger.info('max_utilities function')
 
     placements = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(max_utility, np.array(utilities[student]), budgets[student], np.array(prices), num_of_courses) for student in utilities.agents()]
+        # placements = []
+        # concurrent.futures.wait(futures)
+        for future in concurrent.futures.as_completed(futures):  # return each result as soon as it is completed:
+            placements.append(future.result())
 
-    for student in utilities.agents():
-        placement: List[bool] = max_utility(utilities[student], budgets[student], prices, num_of_courses)
-        placements.append(placement)
+    # for student in utilities.agents():
+    #     placement: List[bool] = max_utility(utilities[student], budgets[student], prices, num_of_courses)
+    #     placements.append(placement)
 
     return placements
 
@@ -378,45 +384,58 @@ class Course_Bundle:
 
 if __name__ == '__main__':
 
+    my_plot()
+
     # import doctest
     #
     # doctest.testmod()
 
-    utilities = ValuationMatrix([[3, 7, 1, 64, 34],
-                                 [88, 2, 4, 6, 8],
-                                 [5, 2, 7, 33, 14],
-                                 [58, 95, 33, 5, 2],
-                                 [77, 90, 34, 21, 63],
-                                 [3, 7, 1, 64, 34],
-                                 [88, 2, 4, 6, 8],
-                                 [5, 2, 7, 33, 14],
-                                 [58, 95, 33, 5, 2],
-                                 [77, 90, 34, 21, 63],
-                                 [3, 7, 1, 64, 34],
-                                 [88, 2, 4, 6, 8],
-                                 [5, 2, 7, 33, 14],
-                                 [58, 95, 33, 5, 2],
-                                 [77, 90, 34, 21, 63]])
+    # print(general_course_allocation( ValuationMatrix([[30, 70], [55, 45], [80, 20]]), [1, 1], 1))
 
-    bound: float = 0
-    budgets: List[float] = [1.5, 1.11, 1.222, 1.7, 1.56, 1.3, 1.41, 1.62, 1.52, 1.435, 1.932, 1.685, 1.24, 1.27, 1.666]
-    prices: List[float] = [1.0, 0.0, 1.2, 1.22, 0.3]
-    capacity: List[int] = [3, 3, 3, 3, 3]
-    num_of_courses = 3
+    # utilities = ValuationMatrix([[3, 7, 1, 13, 34, 23, 24, 5, 77, 32, 12, 22, 34, 18, 51],
+    #                              [5, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [76, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [22, 3, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [56, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [28, 7, 1, 64, 34, 23, 24, 5, 77, 32, 12, 22, 34, 18, 51],
+    #                              [50, 2, 7, 33, 14, 58, 95, 33, 2, 2, 77, 90, 34, 21, 63],
+    #                              [59, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 9, 34, 21, 63],
+    #                              [23, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 93, 34, 21, 63],
+    #                              [86, 2, 7, 33, 14, 9, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [33, 7, 1, 64, 34, 23, 24, 5, 77, 32, 12, 22, 34, 18, 51],
+    #                              [53, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [22, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [40, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [86, 2, 7, 33, 14, 9, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [33, 7, 1, 64, 34, 23, 24, 5, 77, 32, 12, 22, 34, 18, 51],
+    #                              [53, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [22, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [40, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63],
+    #                              [5, 2, 7, 33, 14, 58, 95, 33, 5, 2, 77, 90, 34, 21, 63]])
+    #
+    # bound: float = 0
+    # budgets: List[float] = [1.0, 1.11, 1.2, 1.22, 1.43, 1.32, 1.65, 1.222, 1.7, 1.56, 1.3, 1.41, 1.62, 1.52, 1.435,
+    #                         1.932, 1.685, 1.24, 1.27, 1.666]
+    # prices: List[float] = [1.0, 0.0, 1.2, 1.22, 0.3, 1.32, 1.65, 1.222, 1.7, 0.2, 0.2, 0.6, 0.66, 1.4, 2.1]
+    # capacity: List[int] = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1]
+    # num_of_courses = 4
+    #
+    #
 
-    placements = []
-    for i in utilities.agents():
-        placements.append(max_utility(utilities[i], budgets[i], prices, num_of_courses))
 
-    # course_allocation test:
-    print("course_allocation:")
-    print(np.array(course_allocation(utilities, budgets, prices, capacity, num_of_courses)))
+    # placements = []
+    # for i in utilities.agents():
+    #     placements.append(max_utility(utilities[i], budgets[i], prices, num_of_courses))
+
+    # # course_allocation test:
+    # print("course_allocation:")
+    # print(np.array(course_allocation(utilities, budgets, prices, capacity, num_of_courses)))
     # neighbors test:
-    print("neighbors:")
-    print(neighbors(utilities, budgets, prices, capacity, num_of_courses))
-    # score test:
-    print("score:")
-    print(score(placements, capacity))
-    # max_utility test:
-    print("max_utility")
-    print(max_utility(utilities[0], budgets[0], prices, num_of_courses))
+    # print("neighbors:")
+    # print(neighbors(utilities, budgets, prices, capacity, num_of_courses))
+    # # score test:
+    # print("score:")
+    # print(score(placements, capacity))
+    # # max_utility test:
+    # print("max_utility")
+    # print(max_utility(utilities[0], budgets[0], prices, num_of_courses))
