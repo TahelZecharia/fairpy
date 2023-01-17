@@ -8,6 +8,7 @@ from fairpy.items.valuations import ValuationMatrix
 
 app = Flask(__name__)
 
+
 @app.route('/')
 def home():
     return render_template('home.html')
@@ -15,7 +16,6 @@ def home():
 
 @app.route('/allocation', methods=['POST'])
 def allocation():
-
     file_name = request.files['file_name']
     if file_name:
         stream = io.StringIO(file_name.stream.read().decode("UTF8"), newline=None)
@@ -25,7 +25,6 @@ def allocation():
 
 
 def find_allocation(data):
-
     placement_matrix = []
 
     try:
@@ -46,9 +45,8 @@ def find_allocation(data):
 
     return placement_matrix
 
+
 if __name__ == '__main__':
     app.run(debug=False, host="0.0.0.0", port=5000)
     # app.run(debug=True)
 # https://stackoverflow.com/questions/33070395/not-able-to-parse-a-csv-file-uploaded-using-flask
-
-
